@@ -13,6 +13,8 @@ committed once.
 The big table is not essential. A smaller table fails too, after proportionally more commits; see
 [Table size](#table-size).
 
+Reported upstream: https://github.com/dolthub/doltlite/issues/2820
+
 ## Reproduce it
 
 You need Docker, a POSIX shell (Linux, macOS, or Windows with WSL), and about 5 GB free in Docker's
