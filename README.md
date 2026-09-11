@@ -10,6 +10,9 @@ Error near line 2: out of memory
 SQLite 3.46.1 vacuums the same rows without an error, and so does DoltLite when the same changes are
 committed once.
 
+The big table is not essential. A smaller table fails too, after proportionally more commits; see
+[Table size](#table-size).
+
 ## Reproduce it
 
 You need Docker, a POSIX shell (Linux, macOS, or Windows with WSL), and about 5 GB free in Docker's
@@ -187,6 +190,44 @@ Result: DoltLite's output differs from SQLite's on 1 line(s), marked with |, < o
 - Related but different: [dolthub/doltlite#1633](https://github.com/dolthub/doltlite/issues/1633)
   (closed), where `dolt_gc` ran out of memory on stores over about 2 GB because its rewrite buffered all
   live chunks. Here nothing is rewritten: the file is unchanged, and `VACUUM INTO` writes nothing.
+
+## Table size
+
+The 4,000,000 rows are not what triggers the failure: the number of committed changes together with the
+size of the table is. With the same kind of change, `VACUUM` fails on smaller tables too, after
+proportionally more commits. In every run it first failed once the table's rows times its committed
+changes came to between about 3.0 and 3.6 billion.
+
+| Rows in `t` | Rows changed per commit | Last success | First failure | Rows × changes at the first failure | File before the failing run | Peak memory of the failing run |
+|---|---|---|---|---|---|---|
+| 4,000,000 | 400 | 800 changes | 900 changes | 3.6 billion | 2,427,399,613 bytes | 1,255,952 KiB |
+| 1,000,000 | 100 | 3,024 changes | 3,360 changes | 3.4 billion | 2,210,587,237 bytes | 1,253,852 KiB |
+| 250,000 | 25 | 12,096 changes | 13,440 changes | 3.4 billion | 2,198,268,824 bytes | 1,255,148 KiB |
+| 64,000 | 6 | 47,250 changes | 52,500 changes | 3.4 billion | 2,347,500,093 bytes | 1,270,456 KiB |
+
+How it was measured: every committed change was the same statement pair, adding 1 to every 10,000th row,
+`UPDATE t SET v = v + 1 WHERE id IN (SELECT value FROM generate_series(10000, N, 10000))` and then
+`SELECT dolt_commit('-Am', 'change')`, after a first commit of the rows. It ran in the image this
+repository builds, in a container with an 8 GiB memory limit. `VACUUM` ran at checkpoints on the same
+database as its history grew, so each successful run had compacted the file before the next; each row of
+the table stops at the first checkpoint that failed. The 4,000,000-row line is the one under
+[Other observations](#other-observations), measured with `SELECT dolt_gc()`, which fails the same way;
+the other three were measured with `VACUUM` on 2026-09-11.
+
+- The file size does not decide it: the file before the failing run was 2.2 to 2.4 GB whatever the
+  table size.
+- The memory the run needs grows with the history. On the 1,000,000-row table, `VACUUM` peaked at
+  133,040 KiB after 336 changes, 647,372 KiB after 1,680, and 1,143,924 KiB after 3,024, the last
+  success. Every failure came at about 1.2 GiB.
+- A smaller table takes longer to reach the failure, because it needs more commits. Making the changes
+  up to the failure took about 27 s on 1,000,000 rows, 73 s on 250,000 and 111 s on 64,000, while the
+  test's 1,200 changes on 4,000,000 rows take about 15 s. That is why the test uses the big table.
+- Why, inferred from these numbers and the source reading above, not traced in the code: a commit that
+  changes rows spread across the table writes new copies of the index pages above them, and each new
+  page puts all of its child references on the garbage collector's queue. The bigger the table, the more
+  pages a spread-out change rewrites, so each commit adds more references and the queue reaches its
+  16,777,216 entries after fewer commits. At the same rate, a 4,000-row table would need about 840,000
+  committed changes; that is a prediction from the table, not a measurement.
 
 ## Environment
 
